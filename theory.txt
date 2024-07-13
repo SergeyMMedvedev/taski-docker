@@ -100,4 +100,104 @@ jobs:
       # что нужно проверить файлы только в папке backend/
       run: python -m flake8 backend/
 
+Чтобы автоматически запустить эти тесты в workflow, допишите инструкции в main.yml:
 
+# .github/workflows/main.yml
+name: Main Taski workflow
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: 3.9
+
+    # Чтобы запустить тесты, нужно установить зависимости
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip 
+        pip install flake8==6.0.0 flake8-isort==6.0.0
+        pip install -r ./backend/requirements.txt 
+    # Этот шаг дополним:
+    - name: Test with flake8 and django tests
+      # Команд стало больше одной; ставим символ | и пишем команды построчно
+      run: |
+        python -m flake8 backend/
+        cd backend/
+        python manage.py test
+
+Тесты запустились, но сразу упали с ошибкой подключения к БД. Что-то пошло не так.
+
+Когда для работы проекта использовалась СУБД SQLite, тесты могли создать себе временную БД автоматически. Но теперь Django-проект настроен на использование сервера PostgreSQL, а запустить сервер PostgreSQL тесты не могут. В результате тесты считают, что проект не работает. Чтобы это исправить, нужно развернуть сервер PostgreSQL для прогона тестов.
+В GitHub Actions предусмотрена возможность запуска дополнительных серверов. В описании workflow можно добавить блок services и описать в нём, какие сервисы нужно запустить.
+
+
+Для удобства запуска дополнительных сервисов на раннерах по умолчанию установлен докер, а сами сервисы описываются и запускаются так же, как в docker-compose.yml.
+Чтобы установить и запустить сервер PostgreSQL:
+запускаем контейнер из образа postgres:13.10;
+прокидываем порт 5432 хоста (раннера) на такой же порт контейнера;
+указываем переменные окружения для запуска тестов, чтобы Django знал, куда отправлять запросы к БД: передаём доступы к БД, её адрес и порт.
+Обновите main.yml:
+
+name: Main Taski workflow
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    # Блок services аналогичен docker-compose.yml
+    services:
+      postgres:
+        image: postgres:13.10
+        # Указываем имя тестовой базы, имя и пароль пользователя в открытом виде,
+        # ведь эта база будет работать только во время прогона тестов
+        env:
+          POSTGRES_USER: django_user
+          POSTGRES_PASSWORD: django_password
+          POSTGRES_DB: django_db
+        ports:
+          - 5432:5432
+        # Эта конструкция описывает проверку готовности сервиса postgres
+        # Если её не будет, то тесты могут запуститься раньше, чем сервер PostgreSQL
+        # В результате тесты опять решат, что базы нет, — и упадут
+        options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+    steps:
+    - uses: actions/checkout@v3
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: 3.9
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip 
+        pip install flake8==6.0.0 flake8-isort==6.0.0
+        pip install -r ./backend/requirements.txt 
+    # Этот шаг дополним переменными для доступа к БД
+    - name: Test with flake8 and django tests
+      # Добавляем env-переменные для доступа к БД
+      env:
+        POSTGRES_USER: django_user
+        POSTGRES_PASSWORD: django_password
+        POSTGRES_DB: django_db
+        # Сервер БД запущен в Docker, но его порт проброшен на хост
+        # Поэтому подключаемся к 127.0.0.1:5432
+        DB_HOST: 127.0.0.1
+        DB_PORT: 5432
+      run: |
+        python -m flake8 backend/
+        cd backend/
+        python manage.py test
